@@ -1,0 +1,116 @@
+import requests
+
+# Replace "YOUR_API_KEY" with your actual Riot API key
+api_key = "YOUR_API_KEY"
+
+# Set the region (e.g., 'na1' for North America)
+regions = ["na1", "euw1", "eun1", "kr", "br1", "la1", "la2", "oc1", "tr1", "ru", "sg2", "th2", "tw2", "vn2"]
+
+# Set the tier and division
+tiers = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "DIAMOND", "EMERALD", "MASTER", "GRANDMASTER", "CHALLENGER"]
+divisions = ["I", "II", "III", "IV"]
+
+matches_per_player = 10
+roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+
+# Set the number of summoners to retrieve (max 1000)
+num_pages = 10  # Reduced for testing
+
+# Iterate through regions and ranks
+for region in regions:
+    if region in ["eun1", "euw1", "tr1", "ru"]:
+        region_api = "europe"
+    elif region in ["la1", "la2", "br1", "oc1"]:
+        region_api = "americas"
+    elif region in ["kr"]:
+        region_api = "asia"
+    elif region in ["na1", "sg2", "th2", "tw2", "vn2"]:
+        region_api = "sea"
+
+    for tier in tiers:
+        # For Challenger tier, no need to iterate over divisions
+        if tier in ["CHALLENGER", "GRANDMASTER", "MASTER"]:
+            summoner_list_url = f"https://{region}.api.riotgames.com/lol/league-exp/v4/entries/RANKED_SOLO_5x5/{tier}?page=1&endIndex={num_pages}"
+        else:
+            for division in divisions:
+                summoner_list_url = f"https://{region}.api.riotgames.com/lol/league/v4/entries/RANKED_SOLO_5x5/{tier}/{division}?page=1&endIndex={num_pages}"
+                
+        headers = {"X-Riot-Token": api_key}  # Add the API key to the headers
+        summoner_list_response = requests.get(summoner_list_url, headers=headers)
+        summoner_list_data = summoner_list_response.json()
+
+        # Keep track of matches
+        unique_matches = set()
+
+        # Iterate through summoners and print summoner name and summoner ID
+        for summoner in summoner_list_data:
+            summoner_id = summoner.get("summonerId")
+            summoner_name = summoner.get("summonerName")
+            summoner_url = f"https://{region}.api.riotgames.com/lol/summoner/v4/summoners/{summoner_id}"
+            summoner_response = requests.get(summoner_url, headers=headers)
+            summoner_data = summoner_response.json()
+            
+            # Extract PUUID
+            puuid = summoner_data.get("puuid")
+            
+            # Build the match list URL
+            match_list_url = f"https://{region_api}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count={matches_per_player}"
+            match_list_response = requests.get(match_list_url, headers=headers)
+            match_list = match_list_response.json()
+            
+            for match_id in match_list:
+                if match_id in unique_matches:
+                    continue  # Skip this match if it's a duplicate
+                unique_matches.add(match_id)  # Add the match ID to the set
+                
+                match_data_url = f"https://{region_api}.api.riotgames.com/lol/match/v5/matches/{match_id}"
+                match_data_response = requests.get(match_data_url, headers=headers)
+                match_data = match_data_response.json()
+                
+                if match_data_response.status_code != 200:
+                    continue  # Skip this match if there's an error
+                if "info" not in match_data:
+                    continue  # Skip this match if 'info' key is not present
+                
+                # Get top laners
+                top_laners = []
+                top_laners_puuid = []
+                top_laners_win = []
+                
+                for player in match_data["info"]["participants"]:
+                    if player["individualPosition"] == "TOP":
+                        top_laners.append(player["summonerName"])
+                        top_laners_puuid.append(player["puuid"])
+                        top_laners_win.append(player["win"])
+                
+                if len(top_laners) == 2 and len(top_laners_puuid) == 2:
+                    break
+                else:
+                    continue
+                
+                # Get timeline and gold
+                match_timeline_url = f"https://{region_api}.api.riotgames.com/lol/match/v5/matches/{match_id}/timeline"
+                match_timeline_response = requests.get(match_timeline_url, headers=headers)
+                match_timeline = match_timeline_response.json()
+                
+                # Define the desired time in seconds (15 minutes = 900 seconds)
+                desired_time = 900000  # Convert seconds to milliseconds
+                
+                participants_all = match_timeline.get("info", {}).get("participants", [])
+                player_1_gold = None
+                player_2_gold = None
+                
+                if len(participants_all) >= 2 and len(top_laners_puuid) == 2:
+                    for frame in match_timeline["info"]["frames"]:
+                        if frame["timestamp"] >= desired_time:
+                            for participant_id, participant_frame in frame["participantFrames"].items():
+                                if participant_id == top_laners_puuid[0]:
+                                    player_1_gold = participant_frame.get("totalGold")
+                                elif participant_id == top_laners_puuid[1]:
+                                    player_2_gold = participant_frame.get("totalGold")
+                
+                if (
+                    len(top_laners) == 2 and len(top_laners_puuid) == 2 and
+                    len(top_laners_win) == 2 and player_1_gold is not None and player_2_gold is not None
+                ):
+                    print(f"{summoner_name}, {region}, {tier} {division}, {top_laners[0]}, {player_1_gold}, {top_laners_win[0]}, {top_laners[1]}, {player_2_gold}, {top_laners_win[1]}")
